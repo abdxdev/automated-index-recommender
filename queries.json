@@ -1,0 +1,144 @@
+{
+  "queries": [
+    {
+      "collection": "movies",
+      "queries": [
+        {
+          "name": "title_equality",
+          "query": {"title": "The Godfather"},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find movies by exact title"
+        },
+        {
+          "name": "year_range",
+          "query": {"year": {"$gt": 2000}},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find movies after 2000"
+        },
+        {
+          "name": "genre_with_sort",
+          "query": {"genres": "Drama"},
+          "projection": {"title": 1, "genres": 1},
+          "sort": [["imdb.rating", -1]],
+          "limit": 100,
+          "description": "Find drama movies sorted by rating"
+        },
+        {
+          "name": "country_and_rating",
+          "query": {"countries": "USA", "rated": "PG-13"},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find US PG-13 movies"
+        },
+        {
+          "name": "cast_member",
+          "query": {"cast": "Tom Hanks"},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find movies with specific actor"
+        },
+        {
+          "name": "complex_query",
+          "query": {"imdb.rating": {"$gt": 8.0}, "year": {"$gte": 1990}},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find highly rated movies from 1990 onward"
+        },
+        {
+          "name": "query_with_projection",
+          "query": {"countries": "USA", "year": {"$gt": 2000}},
+          "projection": {"title": 1, "year": 1, "imdb.rating": 1},
+          "sort": [["imdb.rating", -1]],
+          "limit": 100,
+          "description": "Find recent US movies with projection"
+        }
+      ]
+    },
+    {
+      "collection": "comments",
+      "queries": [
+        {
+          "name": "movie_id_query",
+          "query": {"movie_id": {"$exists": true}},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find comments with movie_id"
+        },
+        {
+          "name": "email_query",
+          "query": {"email": {"$exists": true}},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find comments with email"
+        },
+        {
+          "name": "date_query",
+          "query": {"date": {"$gt": {"$date": "2015-01-01T00:00:00Z"}}},
+          "projection": null,
+          "sort": [["date", -1]],
+          "limit": 100,
+          "description": "Find comments after 2015"
+        }
+      ]
+    },
+    {
+      "collection": "theaters",
+      "queries": [
+        {
+          "name": "city_query",
+          "query": {"location.address.city": {"$exists": true}},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find theaters by city"
+        },
+        {
+          "name": "state_query",
+          "query": {"location.address.state": "NY"},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find theaters in New York"
+        },
+        {
+          "name": "zip_code_query",
+          "query": {"location.address.zipcode": {"$exists": true}},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find theaters with zipcode"
+        }
+      ]
+    },
+    {
+      "collection": "users",
+      "queries": [
+        {
+          "name": "name_query",
+          "query": {"name": {"$exists": true}},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find users with name field"
+        },
+        {
+          "name": "email_query",
+          "query": {"email": {"$exists": true}},
+          "projection": null,
+          "sort": null,
+          "limit": 100,
+          "description": "Find users with email field"
+        }
+      ]
+    }
+  ]
+}

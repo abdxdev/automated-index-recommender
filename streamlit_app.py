@@ -5,9 +5,19 @@ import tempfile
 import os
 import time
 import matplotlib.pyplot as plt
+import importlib
+import sys
+
+# Force reload of modules to fix caching issues
+if "db_connect" in sys.modules:
+    importlib.reload(sys.modules["db_connect"])
+if "db_queries" in sys.modules:
+    importlib.reload(sys.modules["db_queries"])
+if "index_recommender" in sys.modules:
+    importlib.reload(sys.modules["index_recommender"])
+
 from db_connect import db_connect
 from db_queries import DBQueries
-from log_parser import LogParser
 from index_recommender import IndexRecommender
 
 # Set page config
@@ -27,12 +37,10 @@ if 'client' not in st.session_state:
     st.session_state.client = None
 if 'db_queries' not in st.session_state:
     st.session_state.db_queries = None
-if 'log_parser' not in st.session_state:
-    st.session_state.log_parser = None
 if 'recommender' not in st.session_state:
     st.session_state.recommender = None
-if 'parsed_queries' not in st.session_state:
-    st.session_state.parsed_queries = []
+if 'query_results' not in st.session_state:
+    st.session_state.query_results = []
 if 'recommendations' not in st.session_state:
     st.session_state.recommendations = []
 if 'selected_db' not in st.session_state:
@@ -40,7 +48,7 @@ if 'selected_db' not in st.session_state:
 
 # Sidebar navigation
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Connect to MongoDB", "Upload & Parse Logs", 
+page = st.sidebar.radio("Go to", ["Connect to MongoDB", "Analyze Queries", 
                                "View Recommendations", "Apply Indexes"])
 
 # MongoDB Connection page
@@ -69,13 +77,18 @@ if page == "Connect to MongoDB":
                     databases = client.list_database_names()
                     st.session_state.databases = databases
                     
-                    # Select a database
-                    st.subheader("Select a Database")
-                    selected_db = st.selectbox("Select a database", databases)
+                    # Default to sample_mflix database if available
+                    if "sample_mflix" in databases:
+                        selected_db = "sample_mflix"
+                    else:
+                        selected_db = databases[0] if databases else None
                     
                     if selected_db:
                         st.session_state.selected_db = selected_db
                         st.session_state.db_queries = DBQueries(selected_db)
+                        
+                        # Initialize recommender right away
+                        st.session_state.recommender = IndexRecommender(st.session_state.db_queries)
                         
                         # List collections
                         collections = st.session_state.db_queries.list_collections()
@@ -98,142 +111,170 @@ if page == "Connect to MongoDB":
             if new_db != st.session_state.selected_db:
                 st.session_state.selected_db = new_db
                 st.session_state.db_queries = DBQueries(new_db)
+                st.session_state.recommender = IndexRecommender(st.session_state.db_queries)
+                st.session_state.query_results = []
+                st.session_state.recommendations = []
                 st.rerun()
     else:
         st.warning("⚠️ Not connected to MongoDB")
 
-# Upload & Parse Logs page
-elif page == "Upload & Parse Logs":
-    st.header("Upload & Parse MongoDB Logs")
+# Analyze Queries page
+elif page == "Analyze Queries":
+    st.header("Analyze MongoDB Queries")
     
     # Check if connected to MongoDB
     if not st.session_state.connected:
         st.warning("Please connect to MongoDB first")
         st.stop()
     
-    # File upload
-    uploaded_file = st.file_uploader("Upload MongoDB log file", type=["log", "txt"])
+    # Ensure recommender is initialized
+    if not st.session_state.recommender:
+        try:
+            st.session_state.recommender = IndexRecommender(st.session_state.db_queries)
+            st.info("Initialized new index recommender")
+        except Exception as e:
+            st.error(f"Failed to initialize recommender: {e}")
+            st.stop()
     
-    if uploaded_file is not None:
+    # Custom queries JSON file uploader
+    uploaded_queries = st.file_uploader("Upload custom queries JSON file (optional)", type=["json"])
+    
+    if uploaded_queries:
         # Create a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.log') as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            log_file_path = tmp_file.name
-        
-        # Initialize log parser
-        log_parser = LogParser()
-        
-        # Parse button
-        if st.button("Parse Log File"):
-            with st.spinner("Parsing logs..."):
-                # Parse the log file
-                parsed_queries = log_parser.parse_log_file(log_file_path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.json') as tmp_file:
+            tmp_file.write(uploaded_queries.getvalue())
+            queries_file_path = tmp_file.name
+    else:
+        # Make sure the file exists in the current directory
+        if os.path.exists("queries.json"):
+            queries_file_path = "queries.json"
+        else:
+            full_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queries.json")
+            if os.path.exists(full_path):
+                queries_file_path = full_path
+            else:
+                st.error("queries.json file not found in the current directory")
+                st.stop()
+    
+    # Run query analysis
+    if st.button("Run Query Analysis"):
+        with st.spinner("Running test queries and analyzing performance..."):
+            try:
+                # Check if the run_test_queries method exists
+                if not hasattr(st.session_state.recommender, 'run_test_queries'):
+                    st.error("The recommender does not have a run_test_queries method. Reinitializing...")
+                    # Force reload the module
+                    if "index_recommender" in sys.modules:
+                        importlib.reload(sys.modules["index_recommender"])
+                    # Create a new recommender instance
+                    st.session_state.recommender = IndexRecommender(st.session_state.db_queries)
+                    if not hasattr(st.session_state.recommender, 'run_test_queries'):
+                        st.error("Still cannot find run_test_queries method after reload.")
+                        st.stop()
                 
-                # Store in session state
-                st.session_state.log_parser = log_parser
-                st.session_state.parsed_queries = parsed_queries
+                # Run queries and analyze results
+                query_results = st.session_state.recommender.run_test_queries(queries_file_path)
                 
-                st.success(f"Successfully parsed {len(parsed_queries)} queries")
+                # Store results in session state
+                st.session_state.query_results = query_results
+                
+                st.success(f"Successfully analyzed {len(query_results)} queries")
                 
                 # Show stats
-                st.subheader("Log Statistics")
+                st.subheader("Query Statistics")
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.metric("Total Queries", len(parsed_queries))
+                    st.metric("Total Queries", len(query_results))
                 
                 with col2:
-                    slow_queries = log_parser.get_slow_queries()
+                    slow_queries = [q for q in query_results if q.get("execution_time_ms", 0) > 100]
                     st.metric("Slow Queries (>100ms)", len(slow_queries))
                 
-                # Display sample of parsed queries
-                if parsed_queries:
-                    st.subheader("Sample of Parsed Queries")
+                # Display sample of test queries
+                if query_results:
+                    st.subheader("Sample of Test Queries")
                     
-                    if len(parsed_queries) > 0:
-                        df = pd.DataFrame([
-                            {
-                                'timestamp': q.get('timestamp'),
-                                'database': q.get('database'),
-                                'collection': q.get('collection'),
-                                'execution_time_ms': q.get('execution_time_ms'),
-                                'query': str(q.get('query', ''))[:50] + '...' if q.get('query') else ''
-                            }
-                            for q in parsed_queries[:10]
-                        ])
-                        
-                        st.dataframe(df)
-        
-        # If logs are already parsed, show stats
-        if st.session_state.log_parser and st.session_state.parsed_queries:
-            st.subheader("Log Statistics")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.metric("Total Queries", len(st.session_state.parsed_queries))
-            
-            with col2:
-                slow_queries = st.session_state.log_parser.get_slow_queries()
-                st.metric("Slow Queries (>100ms)", len(slow_queries))
-                
-            # Display slow queries
-            if slow_queries:
-                st.subheader("Slow Queries")
-                
-                df_slow = pd.DataFrame([
-                    {
-                        'timestamp': q.get('timestamp'),
-                        'database': q.get('database'),
-                        'collection': q.get('collection'),
-                        'execution_time_ms': q.get('execution_time_ms'),
-                        'query': str(q.get('query', ''))[:50] + '...' if q.get('query') else ''
-                    }
-                    for q in slow_queries[:10]
-                ])
-                
-                st.dataframe(df_slow)
-        
-        # Clean up the temporary file
+                    df = pd.DataFrame([
+                        {
+                            'collection': q.get('collection'),
+                            'query_name': q.get('query_name', ''),
+                            'execution_time_ms': round(q.get('execution_time_ms', 0), 2),
+                            'is_indexed': q.get('is_indexed', False),
+                            'results': q.get('result_count', 0),
+                            'query': str(q.get('query', ''))[:50] + '...' if len(str(q.get('query', ''))) > 50 else str(q.get('query', ''))
+                        }
+                        for q in query_results[:10]
+                    ])
+                    
+                    st.dataframe(df)
+            except Exception as e:
+                st.error(f"Error analyzing queries: {e}")
+    
+    # Clean up uploaded file if needed
+    if uploaded_queries and 'queries_file_path' in locals():
         try:
-            os.unlink(log_file_path)
+            os.unlink(queries_file_path)
         except:
             pass
+    
+    # If queries are already analyzed, show stats
+    if st.session_state.query_results:
+        st.subheader("Query Statistics")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric("Total Queries", len(st.session_state.query_results))
+        
+        with col2:
+            slow_queries = [q for q in st.session_state.query_results if q.get("execution_time_ms", 0) > 100]
+            st.metric("Slow Queries (>100ms)", len(slow_queries))
+            
+        # Display slow queries
+        if slow_queries:
+            st.subheader("Slow Queries")
+            
+            df_slow = pd.DataFrame([
+                {
+                    'collection': q.get('collection'),
+                    'query_name': q.get('query_name', ''),
+                    'execution_time_ms': round(q.get('execution_time_ms', 0), 2),
+                    'is_indexed': q.get('is_indexed', False),
+                    'results': q.get('result_count', 0),
+                    'query': str(q.get('query', ''))[:50] + '...' if len(str(q.get('query', ''))) > 50 else str(q.get('query', ''))
+                }
+                for q in slow_queries[:10]
+            ])
+            
+            st.dataframe(df_slow)
 
 # View Recommendations page
 elif page == "View Recommendations":
     st.header("Index Recommendations")
     
-    # Check if connected to MongoDB and logs are parsed
+    # Check if connected to MongoDB
     if not st.session_state.connected:
         st.warning("Please connect to MongoDB first")
         st.stop()
     
-    if not st.session_state.log_parser:
-        st.warning("Please upload and parse logs first")
-        st.stop()
-    
     # Initialize recommender if needed
-    if not st.session_state.recommender:
-        st.session_state.recommender = IndexRecommender(
-            st.session_state.db_queries, 
-            st.session_state.log_parser
-        )
-    
-    # Display query patterns for debugging
-    if st.checkbox("Show Query Patterns (Debug)"):
-        st.subheader("Query Patterns")
-        st.json(st.session_state.log_parser.query_patterns)
+    if st.session_state.db_queries and not st.session_state.recommender:
+        st.session_state.recommender = IndexRecommender(st.session_state.db_queries)
     
     # Generate recommendations button
     if st.button("Generate Index Recommendations"):
         with st.spinner("Analyzing query patterns and generating recommendations..."):
             # Generate recommendations
-            recommendations = st.session_state.recommender.recommend_indexes_from_logs()
+            recommender = st.session_state.recommender
+            recommendations = recommender.recommend_indexes()
             
             # Store in session state
             st.session_state.recommendations = recommendations
             
-            st.success(f"Generated {len(recommendations)} index recommendations")
+            if recommendations:
+                st.success(f"Generated {len(recommendations)} index recommendations")
+            else:
+                st.info("No index recommendations found. All queries may already be optimized with existing indexes.")
     
     # Display recommendations
     if st.session_state.recommendations:
@@ -302,6 +343,9 @@ elif page == "Apply Indexes":
             # Apply button
             if st.button(f"Apply #{i+1}", key=f"apply_btn_{i}"):
                 with st.spinner(f"Creating index on {rec['collection']}..."):
+                    # Save previous execution time
+                    previous_time = rec.get("avg_execution_time_ms", 0)
+                    
                     # Generate index spec
                     index_spec = st.session_state.recommender.generate_index_spec(rec)
                     
@@ -311,13 +355,47 @@ elif page == "Apply Indexes":
                             rec['collection'], index_spec
                         )
                         
+                        # Test the performance with the new index
+                        fields = rec.get("fields", [])
+                        sample_query = {fields[0]: {"$exists": True}} if fields else {"_id": {"$exists": True}}
+                        
+                        # Execute the query with the new index
+                        results, current_time, explain = st.session_state.db_queries.execute_query(
+                            rec['collection'], sample_query
+                        )
+                        
+                        # Calculate improvement
+                        time_diff = previous_time - current_time
+                        improvement_pct = (time_diff / previous_time) * 100 if previous_time > 0 else 0
+                        
                         applied_indexes.append({
                             "collection": rec['collection'],
                             "fields": rec['fields'],
-                            "index_name": index_name
+                            "index_name": index_name,
+                            "previous_time": previous_time,
+                            "current_time": current_time,
+                            "improvement_pct": improvement_pct
                         })
                         
+                        # Display performance improvement
                         st.success(f"Index created: {index_name}")
+                        
+                        # Show performance metrics in an expandable section
+                        with st.expander("Performance Improvement Details"):
+                            st.markdown(f"**Previous execution time:** {previous_time:.2f} ms")
+                            st.markdown(f"**Current execution time:** {current_time:.2f} ms")
+                            st.markdown(f"**Improvement:** {improvement_pct:.2f}%")
+                            
+                            # Add visual indicator
+                            if improvement_pct > 50:
+                                st.success(f"Significant improvement! ✅")
+                            elif improvement_pct > 20:
+                                st.info(f"Moderate improvement! ℹ️")
+                            elif improvement_pct > 0:
+                                st.warning(f"Minimal improvement. ⚠️")
+                            else:
+                                st.error(f"No improvement or performance decreased. ❌")
+                    
                     except Exception as e:
                         st.error(f"Error creating index: {e}")
     
@@ -325,8 +403,58 @@ elif page == "Apply Indexes":
     if applied_indexes:
         st.subheader("Applied Indexes")
         
+        # Create a table of applied indexes with performance metrics
+        performance_data = []
         for idx in applied_indexes:
-            st.markdown(f"- Index `{idx['index_name']}` on collection `{idx['collection']}` (fields: {', '.join(idx['fields'])})")
+            performance_data.append({
+                "Collection": idx['collection'],
+                "Fields": ", ".join(idx['fields']),
+                "Previous Time (ms)": round(idx['previous_time'], 2),
+                "Current Time (ms)": round(idx['current_time'], 2),
+                "Improvement (%)": round(idx['improvement_pct'], 2)
+            })
+        
+        if performance_data:
+            st.table(pd.DataFrame(performance_data))
+            
+            # Create a simple bar chart to visualize improvements
+            if len(performance_data) > 0:
+                fig, ax = plt.subplots(figsize=(10, 5))
+                
+                collections = [data["Collection"] + "\n" + data["Fields"] for data in performance_data]
+                prev_times = [data["Previous Time (ms)"] for data in performance_data]
+                curr_times = [data["Current Time (ms)"] for data in performance_data]
+                
+                x = range(len(collections))
+                bar_width = 0.35
+                
+                ax.bar([i - bar_width/2 for i in x], prev_times, bar_width, label='Before Index', color='coral')
+                ax.bar([i + bar_width/2 for i in x], curr_times, bar_width, label='After Index', color='skyblue')
+                
+                ax.set_xlabel('Collection and Fields')
+                ax.set_ylabel('Execution Time (ms)')
+                ax.set_title('Query Performance Before and After Indexing')
+                ax.set_xticks(x)
+                ax.set_xticklabels(collections, rotation=45, ha='right')
+                ax.legend()
+                
+                plt.tight_layout()
+                st.pyplot(fig)
+        
+        # Option to re-analyze after applying indexes
+        if st.button("Re-analyze Queries"):
+            with st.spinner("Re-running queries to verify performance improvements..."):
+                # Re-run test queries
+                recommender = st.session_state.recommender
+                query_results = recommender.run_test_queries()
+                st.session_state.query_results = query_results
+                
+                # Generate new recommendations
+                recommendations = recommender.recommend_indexes()
+                st.session_state.recommendations = recommendations
+                
+                st.success("Re-analysis complete!")
+                st.rerun()
 
 # Handle app termination
 def on_shutdown():

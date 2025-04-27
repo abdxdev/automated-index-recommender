@@ -1,15 +1,81 @@
 import json
 import re
-from db_queries import DBQueries
-from log_parser import LogParser
-
 
 class IndexRecommender:
-    def __init__(self, db_queries, log_parser=None):
+    def __init__(self, db_queries):
         self.db_queries = db_queries
-        self.log_parser = log_parser
+        self.query_results = []
         self.recommendations = []
         
+    def run_test_queries(self, queries_file_path="queries.json"):
+        """Run test queries from JSON file and collect performance data"""
+        self.query_results = []
+        
+        try:
+            with open(queries_file_path, 'r') as f:
+                query_data = json.load(f)
+                
+            # Iterate through collections and their queries
+            for collection_data in query_data.get("queries", []):
+                collection_name = collection_data.get("collection")
+                
+                # Check if collection exists in the database
+                all_collections = self.db_queries.list_collections()
+                if collection_name not in all_collections:
+                    print(f"Collection {collection_name} not found in database. Skipping...")
+                    continue
+                    
+                # Run each query for this collection
+                for query_item in collection_data.get("queries", []):
+                    query = query_item.get("query", {})
+                    projection = query_item.get("projection")
+                    
+                    # Convert sort format from JSON to MongoDB format
+                    sort = None
+                    if query_item.get("sort"):
+                        try:
+                            # Handle sort as a list of [field, direction] lists
+                            sort = []
+                            for sort_item in query_item.get("sort"):
+                                if isinstance(sort_item, list) and len(sort_item) == 2:
+                                    sort.append((sort_item[0], sort_item[1]))
+                        except Exception as e:
+                            print(f"Error processing sort parameter: {e}")
+                        
+                    limit = query_item.get("limit", 100)
+                    
+                    try:
+                        # Execute query and record results
+                        results, execution_time_ms, explain = self.db_queries.execute_query(
+                            collection_name, query, projection, sort, limit
+                        )
+                        
+                        # Check if index was used
+                        is_indexed = "COLLSCAN" not in str(explain)
+                        
+                        # Record query result
+                        result = {
+                            "collection": collection_name,
+                            "query": query,
+                            "query_name": query_item.get("name", ""),
+                            "query_shape": str(query),
+                            "execution_time_ms": execution_time_ms,
+                            "is_indexed": is_indexed,
+                            "result_count": len(results)
+                        }
+                        
+                        self.query_results.append(result)
+                        print(f"Executed {query_item.get('name')} on {collection_name}: {execution_time_ms:.2f}ms, indexed: {is_indexed}")
+                        
+                    except Exception as e:
+                        print(f"Error executing query {query_item.get('name')} on {collection_name}: {e}")
+                        
+            return self.query_results
+                
+        except Exception as e:
+            print(f"Error loading or processing queries file: {e}")
+            return []
+    
     def analyze_query(self, query):
         index_fields = []
         sort_fields = []
@@ -73,23 +139,52 @@ class IndexRecommender:
                 if field not in fields and not field.startswith("$") and field not in ["type", "coordinates", "geometry"]:
                     fields.append(field)
             
-            # Print fields for debugging
-            print(f"Extracted fields: {query_shape} -> {fields}")
-            
             return fields
         except Exception as e:
             print(f"Error extracting fields: {e}")
             return []
     
-    def recommend_indexes_from_logs(self):
-        if not self.log_parser:
-            return []
+    def recommend_indexes(self):
+        if not self.query_results:
+            print("No query results found. Running test queries...")
+            self.run_test_queries()
             
+        # Process query results
+        query_patterns = {}
+        for result in self.query_results:
+            query_pattern = str(result.get("query_shape", {}))
+            collection = result.get("collection", "")
+            
+            if (query_pattern, collection) in query_patterns:
+                query_patterns[(query_pattern, collection)]["count"] += 1
+                query_patterns[(query_pattern, collection)]["total_time"] += result.get("execution_time_ms", 0)
+            else:
+                query_patterns[(query_pattern, collection)] = {
+                    "count": 1,
+                    "total_time": result.get("execution_time_ms", 0),
+                    "collection": collection,
+                    "is_indexed": result.get("is_indexed", False)
+                }
+        
+        # Generate candidates for indexing
+        candidates = []
+        for (pattern, collection), stats in query_patterns.items():
+            # Skip already indexed patterns
+            if stats.get("is_indexed", False):
+                continue
+                
+            avg_time = stats["total_time"] / stats["count"] if stats["count"] > 0 else 0
+            
+            if (avg_time > 50 and stats["count"] >= 1) or avg_time > 100:
+                candidates.append({
+                    "pattern": pattern,
+                    "avg_execution_time_ms": avg_time,
+                    "execution_count": stats["count"],
+                    "collection": stats["collection"]
+                })
+        
+        # Process candidates into recommendations
         recommendations = []
-        
-        # Get candidates for indexing
-        candidates = self.log_parser.get_query_candidates_for_indexing()
-        
         for candidate in candidates:
             collection = candidate.get("collection")
             if not collection:
@@ -177,7 +272,7 @@ class IndexRecommender:
     
     def get_top_recommendations(self, limit=5):
         if not self.recommendations:
-            self.recommend_indexes_from_logs()
+            self.recommend_indexes()
             
         return self.recommendations[:limit]
     
