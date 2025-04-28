@@ -37,11 +37,8 @@ class IndexRecommender:
 
                 try:
                     results, execution_time_ms, explain = self.db_queries.execute_query(collection_name, query, projection, sort, limit)
-
                     is_indexed = "COLLSCAN" not in str(explain)
-
                     result = {"collection": collection_name, "query": query, "query_name": query_item.get("name", ""), "query_shape": str(query), "execution_time_ms": execution_time_ms, "is_indexed": is_indexed, "result_count": len(results)}
-
                     self.query_results.append(result)
                     print(f"Executed {query_item.get('name')} on {collection_name}: {execution_time_ms:.2f}ms, indexed: {is_indexed}")
 
